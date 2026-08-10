@@ -44,6 +44,42 @@ def foo() -> str:
 }
 
 #[test]
+fn baselined_diagnostic_is_a_hint_and_refreshes() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let foo = SystemPath::new("src/foo.py");
+    let baseline_path = SystemPath::new("src/baseline.json");
+    let foo_content = "def foo() -> str:\n    return 42\n";
+    let baseline = r#"{
+        "version": 1,
+        "files": {
+            "foo.py": [{
+                "rule": "invalid-return-type",
+                "precedingHash": "e99fde1986a53fd7",
+                "followingHash": "7b33129b3c4424a"
+            }]
+        }
+    }"#;
+
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file("src/ty.toml", "baseline = 'baseline.json'\n")?
+        .with_file(baseline_path, baseline)?
+        .with_file(foo, foo_content)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(foo, foo_content, 1);
+    let diagnostics = server.document_diagnostic_request(foo, None);
+    insta::assert_debug_snapshot!(condensed_document_diagnostic_snapshot(diagnostics), @r#""1:11..1:13[HINT]: Return type does not match returned value: expected `str`, found `Literal[42]`""#);
+
+    server.write_file(baseline_path, "{\"version\": 1, \"files\": {}}")?;
+    server.did_change_watched_file(baseline_path, FileChangeType::Changed);
+    let diagnostics = server.document_diagnostic_request(foo, None);
+    insta::assert_debug_snapshot!(condensed_document_diagnostic_snapshot(diagnostics), @r#""1:11..1:13[ERROR]: Return type does not match returned value: expected `str`, found `Literal[42]`""#);
+    Ok(())
+}
+
+#[test]
 fn unused_binding_has_unnecessary_hint_tag() -> Result<()> {
     let _filter = filter_result_id();
 

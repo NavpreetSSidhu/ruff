@@ -285,6 +285,11 @@ impl Diagnostic {
         self.inner.severity
     }
 
+    /// Sets the severity of this diagnostic.
+    pub fn set_severity(&mut self, severity: Severity) {
+        Arc::make_mut(&mut self.inner).severity = severity;
+    }
+
     /// Returns a shared borrow of the "primary" annotation of this diagnostic
     /// if one exists.
     ///
@@ -1109,6 +1114,9 @@ pub enum DiagnosticId {
     /// Use of an invalid command-line option.
     InvalidCliOption,
 
+    /// The configured diagnostic baseline is invalid.
+    InvalidBaseline,
+
     /// Experimental feature requires preview mode.
     PreviewFeature,
 
@@ -1167,6 +1175,7 @@ impl DiagnosticId {
             DiagnosticId::UnsupportedPythonVersion => "unsupported-python-version",
             DiagnosticId::Unformatted => "unformatted",
             DiagnosticId::InvalidCliOption => "invalid-cli-option",
+            DiagnosticId::InvalidBaseline => "invalid-baseline",
             DiagnosticId::PreviewFeature => "preview-feature",
             DiagnosticId::InternalError => "internal-error",
         }
