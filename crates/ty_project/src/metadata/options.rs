@@ -553,7 +553,7 @@ impl Options {
             baseline: self
                 .baseline
                 .as_ref()
-                .map(|path| path.absolute(project_root, db.system())),
+                .map(|path| path.absolute(context.configuration_root(), db.system())),
             rules: Arc::new(rules),
             terminal,
             src,

@@ -675,7 +675,7 @@ mod tests {
     fn test_db_with_baseline() -> TestDb {
         let root = SystemPathBuf::from("/project");
         let mut metadata = ProjectMetadata::new("test", root);
-        metadata.apply_override_options(Options {
+        metadata.set_override_options(Options {
             baseline: Some(RelativePathBuf::cli("/project/baseline.json")),
             ..Options::default()
         });
