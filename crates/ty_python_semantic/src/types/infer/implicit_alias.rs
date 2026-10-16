@@ -1,5 +1,6 @@
 //! Definitions and parameters of implicit type aliases.
 
+use itertools::Itertools;
 use ruff_db::parsed::{parsed_module, parsed_string_annotation};
 use ruff_db::source::source_text;
 use ruff_python_ast::helpers::is_dotted_name;
@@ -386,7 +387,7 @@ impl<'db> ImplicitAliasLegacyTypeVarCollector<'_, 'db> {
         let file = self.alias_definition.program_file(db);
         match expression {
             ast::Expr::Name(name) if name.ctx.is_load() => {
-                let definitions: Vec<_> = if let Some(scope) = self.string_annotation_scope {
+                let definition = if let Some(scope) = self.string_annotation_scope {
                     let (scope, symbol) =
                         self.index
                             .visible_ancestor_scopes(scope)
@@ -400,23 +401,17 @@ impl<'db> ImplicitAliasLegacyTypeVarCollector<'_, 'db> {
                         .use_def_map(scope)
                         .end_of_scope_symbol_bindings(symbol)
                         .filter_map(|binding| binding.binding.definition())
-                        .collect()
+                        .exactly_one()
+                        .ok()?
                 } else {
-                    Vec::from_iter(forwarding_alias_definition(
-                        db,
-                        self.alias_definition,
-                        expression,
-                    ))
-                };
-                let [definition] = definitions.as_slice() else {
-                    return None;
+                    forwarding_alias_definition(db, self.alias_definition, expression)?
                 };
                 // Another alias's parameters are not free parameters of this alias. Inferring
                 // its runtime value here can also re-enter parameter discovery before recursive
                 // aliases have stable generic contexts.
-                (*definition != self.alias_definition
-                    && implicit_alias_definition(db, *definition).is_none())
-                .then(|| binding_type(db, *definition))
+                (definition != self.alias_definition
+                    && implicit_alias_definition(db, definition).is_none())
+                .then(|| binding_type(db, definition))
             }
             ast::Expr::Attribute(attribute) => self
                 .expression_type(&attribute.value)?
