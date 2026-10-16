@@ -853,6 +853,35 @@ def _(
     reveal_type(forwarded_default)  # revealed: list[str]
 ```
 
+### Type variables through module aliases
+
+Assigning a module to another name preserves access to its type variables, including in string
+annotations. Aliases using those variables remain generic:
+
+`variables.py`:
+
+```py
+from typing import TypeVar
+
+T = TypeVar("T")
+```
+
+`main.py`:
+
+```py
+import variables
+
+renamed = variables
+Items = list[renamed.T]
+QuotedItems = list["renamed.T"]
+
+def inspect(explicit: Items[int], default: Items, quoted: QuotedItems[str], quoted_default: QuotedItems):
+    reveal_type(explicit)  # revealed: list[int]
+    reveal_type(default)  # revealed: list[Unknown]
+    reveal_type(quoted)  # revealed: list[str]
+    reveal_type(quoted_default)  # revealed: list[Unknown]
+```
+
 ### Imported tagged typed-dictionary aliases
 
 A stub can define a generic tagged union containing a typed dictionary and expose a concrete

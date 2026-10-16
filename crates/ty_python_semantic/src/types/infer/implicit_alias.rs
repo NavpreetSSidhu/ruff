@@ -93,12 +93,14 @@ pub(super) fn implicit_alias_definition<'db>(
     }
     // Assignments such as `List = list`, `UnionAlias = Union`, and `Renamed = T` preserve
     // the original class, special form, or type variable. A bare reference to a PEP 695
-    // alias likewise preserves its type parameters.
+    // alias likewise preserves its type parameters. Module aliases remain ordinary values
+    // so parameter discovery can resolve their attributes.
     if !is_explicit
         && matches!(value, ast::Expr::Name(_) | ast::Expr::Attribute(_))
         && matches!(
             crate::types::definition_expression_type(db, definition, value),
             Type::ClassLiteral(_)
+                | Type::ModuleLiteral(_)
                 | Type::SpecialForm(_)
                 | Type::KnownInstance(
                     KnownInstanceType::TypeVar(_) | KnownInstanceType::TypeAliasType(_)
