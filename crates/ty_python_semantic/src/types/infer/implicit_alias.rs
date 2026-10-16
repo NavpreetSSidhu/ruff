@@ -112,32 +112,31 @@ pub(super) fn implicit_alias_definition<'db>(
     })
 }
 
-/// Whether a failed alias interpretation refers to an ordinary computed value.
+/// Find the original assignment when a failed alias interpretation refers to a computed value.
 ///
 /// A class-valued assignment is not necessarily a type declaration: `(lambda: int)()`
 /// produces the existing `int` class, whereas a recognized `NamedTuple` or `type` call
 /// creates a class whose definition is the assignment itself. Unknown source definitions
 /// remain eligible for the usual fallback, including unresolved and ambiguous imports.
-#[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _| false, heap_size=ruff_memory_usage::heap_size)]
-pub(super) fn is_non_alias_assignment<'db>(
+#[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _| None, heap_size=ruff_memory_usage::heap_size)]
+pub(super) fn non_alias_assignment<'db>(
     db: &'db dyn Db,
     definition: Definition<'db>,
     ty: Type<'db>,
-) -> bool {
-    let Some(definition) = resolve_imported_definition(db, definition) else {
-        return false;
-    };
+) -> Option<Definition<'db>> {
+    let definition = resolve_imported_definition(db, definition)?;
     let DefinitionKind::Assignment(assignment) = definition.kind(db) else {
-        return false;
+        return None;
     };
     let module = parsed_module(db, definition.python_file(db)).load(db);
     let value = assignment.value(&module);
     if matches!(value, ast::Expr::Name(_) | ast::Expr::Attribute(_)) {
         return forwarding_alias_definition(db, definition, value)
-            .is_some_and(|target| target != definition && is_non_alias_assignment(db, target, ty));
+            .filter(|target| *target != definition)
+            .and_then(|target| non_alias_assignment(db, target, ty));
     }
     if value.is_none_literal_expr() {
-        return false;
+        return None;
     }
     // These forms can describe an alias even when one of its type arguments is invalid.
     // Type-expression inference diagnoses those arguments and preserves the outer type.
@@ -152,33 +151,35 @@ pub(super) fn is_non_alias_assignment<'db>(
                 | Type::SpecialForm(_)
                 | Type::KnownInstance(KnownInstanceType::TypeAliasType(_))
         ) && !forwarding_alias_definition(db, definition, &subscript.value)
-            .is_some_and(|target| is_non_alias_assignment(db, target, base))
+            .is_some_and(|target| non_alias_assignment(db, target, base).is_some())
         {
-            return false;
+            return None;
         }
     }
 
     let origin = match ty {
         Type::Union(union) => {
-            return union.elements(db).iter().any(|element| {
-                !element.is_none(db)
-                    && !element.is_unknown()
-                    && !element.is_divergent()
-                    && is_non_alias_assignment(db, definition, *element)
-            });
+            return union
+                .elements(db)
+                .iter()
+                .filter(|element| {
+                    !element.is_none(db) && !element.is_unknown() && !element.is_divergent()
+                })
+                .find_map(|element| non_alias_assignment(db, definition, *element));
         }
         // Shared and nested factory calls are anchored to their expression rather than
         // a single assignment target, as in `A = B = TypedDict(...)`.
         Type::ClassLiteral(class) if class.definition(db).is_none() => {
-            return class.program_file(db) != definition.program_file(db)
-                || !value.range().contains_range(class.header_range(db));
+            return (class.program_file(db) != definition.program_file(db)
+                || !value.range().contains_range(class.header_range(db)))
+            .then_some(definition);
         }
         Type::KnownInstance(KnownInstanceType::Sentinel(sentinel)) => Some(sentinel.definition(db)),
         _ => ty
             .definition(db, &ProgramEnvironment::from_definition(definition))
             .and_then(|origin| origin.definition()),
     };
-    origin != Some(definition)
+    (origin != Some(definition)).then_some(definition)
 }
 
 fn resolve_imported_definition<'db>(

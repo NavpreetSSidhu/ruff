@@ -1,5 +1,5 @@
 use itertools::Either;
-use ruff_db::diagnostic::Annotation;
+use ruff_db::diagnostic::{Annotation, Diagnostic, SubDiagnostic, SubDiagnosticSeverity};
 use ruff_db::source::source_text;
 use ruff_diagnostics::{Edit, Fix};
 use ruff_python_ast::helpers::is_dotted_name;
@@ -19,10 +19,11 @@ use crate::types::diagnostic::{
     report_unsupported_binary_operation,
 };
 use crate::types::infer::builder::subscript::AnnotatedExprContext;
-use crate::types::infer::implicit_alias::is_non_alias_assignment;
+use crate::types::infer::implicit_alias::non_alias_assignment;
 use crate::types::infer::{
     CyclicTypeAliasError, ImplicitAliasInference, InferenceFlags, TypeExpressionFlags,
     implicit_alias_definition, implicit_alias_parameters, infer_implicit_alias_type,
+    non_alias_type_expression_diagnostics,
 };
 use crate::types::signatures::{ConcatenateTail, Signature};
 use crate::types::special_form::{AliasSpec, LegacyStdlibAlias};
@@ -34,9 +35,9 @@ use ty_python_core::scope::ScopeKind;
 use crate::types::{
     BindingContext, CallableType, DynamicType, GenericContext, IntersectionBuilder,
     IntersectionType, InvalidTypeExpression, KnownClass, KnownInstanceType, LintDiagnosticGuard,
-    Parameter, Parameters, SpecialFormType, SubclassOfType, Type, TypeContext, TypeFormType,
-    TypeGuardType, TypeIsType, TypeMapping, TypeVarKind, UnionBuilder, UnionType, any_over_type,
-    binding_type, todo_type,
+    Parameter, Parameters, SpecialFormType, SubclassOfType, Type, TypeCheckDiagnostics,
+    TypeContext, TypeFormType, TypeGuardType, TypeIsType, TypeMapping, TypeVarKind, UnionBuilder,
+    UnionType, any_over_type, binding_type, todo_type,
 };
 use crate::{FxOrderSet, SemanticModel, add_inferred_python_version_hint_to_diagnostic};
 
@@ -78,6 +79,16 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             self.implicit_aliases.insert(definition);
         }
         Some((ty, inference.parameters))
+    }
+
+    pub(in crate::types::infer) fn finish_non_alias_type_expression_diagnostics(
+        mut self,
+        definition: Definition<'db>,
+        value: &ast::Expr,
+    ) -> TypeCheckDiagnostics {
+        self.context.collect_type_expression_diagnostics();
+        self.finish_implicit_alias_type(definition, value, None)
+            .diagnostics
     }
 
     pub(in crate::types::infer) fn finish_implicit_alias_type(
@@ -277,7 +288,12 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                         TypeExpressionFlags::INVALID_BARE_TYPE_VAR_TUPLE,
                     );
                 }
-                error.into_fallback_type(&self.context, annotation, self.inference_flags())
+                error.into_fallback_type_with(
+                    &self.context,
+                    annotation,
+                    self.inference_flags(),
+                    |diagnostic| self.add_non_alias_diagnostics(diagnostic, ty, definition),
+                )
             });
         self.check_type_variable_scope(annotation, result_ty)
     }
@@ -292,18 +308,44 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         if !ty.is_unknown()
             && !ty.is_divergent()
             && definition
-                .is_some_and(|definition| is_non_alias_assignment(self.db(), definition, ty))
+                .is_some_and(|definition| non_alias_assignment(self.db(), definition, ty).is_some())
         {
-            self.report_invalid_type_expression(
-                reference,
-                format_args!(
+            if let Some(builder) = self.context.report_lint(&INVALID_TYPE_FORM, reference) {
+                let mut diagnostic = builder.into_diagnostic(format_args!(
                     "Variable is not allowed in {}s",
                     self.type_expression_context()
-                ),
-            );
+                ));
+                self.add_non_alias_diagnostics(&mut diagnostic, ty, definition);
+                diagnostic::add_type_expression_reference_link(diagnostic);
+            }
             return true;
         }
         false
+    }
+
+    fn add_non_alias_diagnostics(
+        &self,
+        diagnostic: &mut Diagnostic,
+        ty: Type<'db>,
+        definition: Option<Definition<'db>>,
+    ) {
+        // Explain the original definition once, without recursively expanding errors from
+        // other variables mentioned in its right-hand side.
+        if self.context.is_type_expression_explanation() {
+            return;
+        }
+        let Some(definition) =
+            definition.and_then(|definition| non_alias_assignment(self.db(), definition, ty))
+        else {
+            return;
+        };
+        for cause in non_alias_type_expression_diagnostics(self.db(), definition) {
+            let mut sub = SubDiagnostic::new(SubDiagnosticSeverity::Info, cause.headline_message());
+            for annotation in cause.annotations() {
+                sub.annotate(annotation.clone());
+            }
+            diagnostic.sub(sub);
+        }
     }
 
     /// Infer the type of a type expression without storing the result.

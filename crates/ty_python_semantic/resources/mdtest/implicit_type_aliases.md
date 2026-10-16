@@ -2186,38 +2186,75 @@ A valid runtime expression can still be invalid as a type expression. We reject 
 as an annotation, rather than reporting an error on its ordinary assignment:
 
 ```py
-Number = 1 + 2  # no diagnostic
+Number = 1 + 2
 one = 1
-ForwardedNumber = one  # no diagnostic
+ForwardedNumber = one
 
 def inspect(
-    expression: Number,  # error: [invalid-type-form]
+    expression: Number,  # snapshot: invalid-type-form
     forwarded: ForwardedNumber,  # error: [invalid-type-form]
 ):
     reveal_type(expression)  # revealed: Unknown
     reveal_type(forwarded)  # revealed: Unknown
 ```
 
-An expression that evaluates to a class or `Any` does not automatically define a type alias. Calls,
-indexing into a list or dictionary, conditional expressions, and boolean operations remain ordinary
-values:
+```snapshot
+error[invalid-type-form]: Variable of type `Literal[3]` is not allowed in a parameter annotation
+ --> src/mdtest_snippet.py:6:17
+  |
+6 |     expression: Number,  # snapshot: invalid-type-form
+  |                 ^^^^^^
+info: Invalid binary operator `+` in type annotation
+ --> src/mdtest_snippet.py:1:10
+  |
+1 | Number = 1 + 2
+  |          ^^^^^
+```
+
+An expression that evaluates to a class does not automatically define a type alias. The diagnostic
+explains why its original definition is invalid as a type expression:
 
 ```py
-Evaluated = eval("int")  # no diagnostic
-Called = (lambda: int)()  # no diagnostic
-CalledGeneric = (lambda: list)()  # no diagnostic
-Indexed = [int][0]  # no diagnostic
+Called = type(1)
+
+# snapshot: invalid-type-form
+def inspect(called: Called):
+    reveal_type(called)  # revealed: Unknown
+```
+
+```snapshot
+error[invalid-type-form]: Variable is not allowed in parameter annotations
+  --> src/mdtest_snippet.py:14:21
+   |
+14 | def inspect(called: Called):
+   |                     ^^^^^^
+info: Function calls are not allowed in type alias values
+  --> src/mdtest_snippet.py:11:10
+   |
+11 | Called = type(1)
+   |          ^^^^^^^
+info: See the following page for a reference on valid type expressions:
+info: https://typing.python.org/en/latest/spec/annotations.html#type-and-annotation-expressions
+```
+
+Other calls, indexing into a list or dictionary, conditional expressions, and boolean operations
+also remain ordinary values, even if they evaluate to a class or `Any`. Assigning such a value to
+another name does not make it a type alias:
+
+```py
+Evaluated = eval("int")
+CalledGeneric = (lambda: list)()
+Indexed = [int][0]
 Classes = [int]
-IndexedName = Classes[0]  # no diagnostic
+IndexedName = Classes[0]
 Mapping = {"type": int}
-IndexedMapping = Mapping["type"]  # no diagnostic
-Conditional = int if 1 < 3 else str  # no diagnostic
-Boolean = list or set  # no diagnostic
-ForwardedCalled = Called  # no diagnostic
+IndexedMapping = Mapping["type"]
+Conditional = int if 1 < 3 else str
+Boolean = list or set
+ForwardedCalled = Called
 
 def inspect(
     evaluated: Evaluated,  # error: [invalid-type-form]
-    called: Called,  # error: [invalid-type-form]
     specialized: CalledGeneric[int],  # error: [invalid-type-form]
     indexed: Indexed,  # error: [invalid-type-form]
     indexed_name: IndexedName,  # error: [invalid-type-form]
@@ -2227,7 +2264,6 @@ def inspect(
     forwarded: ForwardedCalled,  # error: [invalid-type-form]
 ):
     reveal_type(evaluated)  # revealed: Unknown
-    reveal_type(called)  # revealed: Unknown
     reveal_type(specialized)  # revealed: Unknown
     reveal_type(indexed)  # revealed: Unknown
     reveal_type(indexed_name)  # revealed: Unknown
@@ -2276,12 +2312,37 @@ ForwardedClass = ComputedClass
 `main.py`:
 
 ```py
-import values
-from values import Number, Forwarded, ComputedClass, ForwardedClass
+from values import ForwardedClass
 
-Local = Number  # no diagnostic
-LocalClass = ComputedClass  # no diagnostic
-AttributeClass = values.ComputedClass  # no diagnostic
+# snapshot: invalid-type-form
+def inspect_forwarded(forwarded: ForwardedClass):
+    reveal_type(forwarded)  # revealed: Unknown
+```
+
+```snapshot
+error[invalid-type-form]: Variable is not allowed in parameter annotations
+ --> src/main.py:4:34
+  |
+4 | def inspect_forwarded(forwarded: ForwardedClass):
+  |                                  ^^^^^^^^^^^^^^
+info: Function calls are not allowed in type alias values
+ --> dependencies/values.py:3:17
+  |
+3 | ComputedClass = (lambda: int)()
+  |                 ^^^^^^^^^^^^^^^
+info: See the following page for a reference on valid type expressions:
+info: https://typing.python.org/en/latest/spec/annotations.html#type-and-annotation-expressions
+```
+
+The same restriction applies to direct imports, module attributes, and local assignments:
+
+```py
+import values
+from values import Number, Forwarded, ComputedClass
+
+Local = Number
+LocalClass = ComputedClass
+AttributeClass = values.ComputedClass
 
 def inspect(
     imported: Number,  # error: [invalid-type-form]
@@ -2297,15 +2358,45 @@ def inspect(
 def inspect_classes(
     imported: ComputedClass,  # error: [invalid-type-form]
     attribute: values.ComputedClass,  # error: [invalid-type-form]
-    forwarded: ForwardedClass,  # error: [invalid-type-form]
     local: LocalClass,  # error: [invalid-type-form]
     local_attribute: AttributeClass,  # error: [invalid-type-form]
 ):
     reveal_type(imported)  # revealed: Unknown
     reveal_type(attribute)  # revealed: Unknown
-    reveal_type(forwarded)  # revealed: Unknown
     reveal_type(local)  # revealed: Unknown
     reveal_type(local_attribute)  # revealed: Unknown
+```
+
+## Suppressing invalid implicit alias uses
+
+An invalid implicit alias is diagnosed where it is used as a type. An ignore on its ordinary
+assignment remains unused and does not hide the explanation at the annotation:
+
+```toml
+[rules]
+unused-ignore-comment = "error"
+```
+
+```py
+# error: [unused-ignore-comment]
+Number = 1 + 2  # ty: ignore[invalid-type-form]
+
+# snapshot: invalid-type-form
+def inspect(value: Number): ...
+def ignored(value: Number): ...  # ty: ignore[invalid-type-form]
+```
+
+```snapshot
+error[invalid-type-form]: Variable of type `Literal[3]` is not allowed in a parameter annotation
+ --> src/mdtest_snippet.py:5:20
+  |
+5 | def inspect(value: Number): ...
+  |                    ^^^^^^
+info: Invalid binary operator `+` in type annotation
+ --> src/mdtest_snippet.py:2:10
+  |
+2 | Number = 1 + 2  # ty: ignore[invalid-type-form]
+  |          ^^^^^
 ```
 
 ## Recursive

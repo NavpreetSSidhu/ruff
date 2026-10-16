@@ -11623,6 +11623,16 @@ impl<'db> InvalidTypeExpressionError<'db> {
         node: &impl Ranged,
         flags: InferenceFlags,
     ) -> Type<'db> {
+        self.into_fallback_type_with(context, node, flags, |_| {})
+    }
+
+    fn into_fallback_type_with(
+        self,
+        context: &InferContext,
+        node: &impl Ranged,
+        flags: InferenceFlags,
+        annotate: impl Fn(&mut Diagnostic),
+    ) -> Type<'db> {
         let db = context.db();
         let InvalidTypeExpressionError {
             fallback_type,
@@ -11633,7 +11643,8 @@ impl<'db> InvalidTypeExpressionError<'db> {
             let Some(builder) = context.report_lint(&INVALID_TYPE_FORM, node) else {
                 continue;
             };
-            let diagnostic = builder.into_diagnostic(error.reason(db, env, flags));
+            let mut diagnostic = builder.into_diagnostic(error.reason(db, env, flags));
+            annotate(&mut diagnostic);
             error.add_subdiagnostics(db, env, diagnostic, node);
         }
         fallback_type
