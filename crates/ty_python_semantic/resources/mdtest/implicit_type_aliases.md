@@ -2302,6 +2302,28 @@ def inspect(
     reveal_type(forwarded)  # revealed: Unknown
 ```
 
+Errors in type arguments remain visible even when the alias itself is invalid:
+
+```py
+def invalid_arguments(
+    # error: [invalid-type-form]
+    # error: [unresolved-reference]
+    single: CalledGeneric[Missing],
+    # error: [invalid-type-form]
+    # error: [unresolved-reference]
+    multiple: CalledGeneric[int, Missing],
+    # error: [invalid-type-form]
+    # error: [unsupported-operator]
+    computed: CalledGeneric[1 + "bad"],
+): ...
+```
+
+Invalid aliases in string annotations also recover without evaluating nested runtime expressions:
+
+```py
+def invalid_string(value: "CalledGeneric[lambda: int]"): ...  # error: [invalid-type-form]
+```
+
 ## Invalid expressions with nested scopes
 
 Lambdas and comprehensions are invalid type arguments, even when they refer to type variables:

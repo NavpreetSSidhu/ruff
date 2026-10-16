@@ -1378,6 +1378,9 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             );
         }
         if self.reject_non_alias_reference(value_ty, definition, &subscript.value) {
+            if !self.in_string_annotation() {
+                self.infer_expression(slice, TypeContext::default());
+            }
             return Type::unknown();
         }
         match value_ty {
