@@ -343,6 +343,9 @@ pub(crate) fn typing_self<'db>(
 ///
 /// Variables are keyed by bound occurrence identity, so freshened copies of the same source-level
 /// generic context can coexist without collapsing into each other.
+///
+/// A generic context always contains at least one type variable. Use `Option<GenericContext>`
+/// to represent a context that may be absent or empty.
 #[salsa::interned(debug, constructor=new_internal, heap_size=ruff_memory_usage::heap_size)]
 pub struct GenericContext<'db> {
     #[returns(copy)]
@@ -372,12 +375,12 @@ impl<'db> GenericContext<'db> {
         index: &SemanticIndex<'db>,
         binding_context: Definition<'db>,
         type_params_node: &ast::TypeParams,
-    ) -> Self {
+    ) -> Option<Self> {
         let variables = type_params_node.iter().filter_map(|type_param| {
             Self::variable_from_type_param(db, index, binding_context, type_param)
         });
 
-        Self::from_typevar_instances_in_program(db, binding_context.program(db), variables)
+        Self::try_from_typevar_instances_in_program(db, binding_context.program(db), variables)
     }
 
     pub(crate) fn of_node(
@@ -428,7 +431,12 @@ impl<'db> GenericContext<'db> {
         }
     }
 
-    /// Creates a generic context from a list of `BoundTypeVarInstance`s.
+    /// Creates a generic context from a nonempty list of `BoundTypeVarInstance`s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `type_params` is empty. Use [`Self::try_from_typevar_instances`] to return `None`
+    /// instead of panicking on empty input.
     pub(crate) fn from_typevar_instances(
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
@@ -437,19 +445,41 @@ impl<'db> GenericContext<'db> {
         Self::from_typevar_instances_in_program(db, env.program(db), type_params)
     }
 
+    /// Creates a generic context, returning `None` if there are no type variables.
+    pub(crate) fn try_from_typevar_instances(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        type_params: impl IntoIterator<Item = BoundTypeVarInstance<'db>>,
+    ) -> Option<Self> {
+        Self::try_from_typevar_instances_in_program(db, env.program(db), type_params)
+    }
+
+    fn try_from_typevar_instances_in_program(
+        db: &'db dyn Db,
+        program: Program<'db>,
+        type_params: impl IntoIterator<Item = BoundTypeVarInstance<'db>>,
+    ) -> Option<Self> {
+        let mut type_params = type_params.into_iter().peekable();
+        type_params.peek()?;
+        Some(Self::from_typevar_instances_in_program(
+            db,
+            program,
+            type_params,
+        ))
+    }
+
     fn from_typevar_instances_in_program(
         db: &'db dyn Db,
         program: Program<'db>,
         type_params: impl IntoIterator<Item = BoundTypeVarInstance<'db>>,
     ) -> Self {
-        Self::new_internal(
-            db,
-            program,
-            type_params
-                .into_iter()
-                .map(|variable| (variable.identity(db), variable))
-                .collect::<FxOrderMap<_, _>>(),
-        )
+        let mut variables = type_params
+            .into_iter()
+            .map(|variable| (variable.identity(db), variable))
+            .collect::<FxOrderMap<_, _>>();
+        assert!(!variables.is_empty(), "a generic context must be nonempty");
+        variables.shrink_to_fit();
+        Self::new_internal(db, program, variables)
     }
 
     /// Merge this generic context with another, returning a new generic context that
@@ -483,14 +513,14 @@ impl<'db> GenericContext<'db> {
         self,
         db: &'db dyn Db,
         binding_context: Option<BindingContext<'db>>,
-    ) -> Self {
+    ) -> Option<Self> {
         #[salsa::tracked(returns(copy), heap_size=ruff_memory_usage::heap_size)]
         fn remove_self_inner<'db>(
             db: &'db dyn Db,
             generic_context: GenericContext<'db>,
             binding_context: Option<BindingContext<'db>>,
-        ) -> GenericContext<'db> {
-            GenericContext::from_typevar_instances_in_program(
+        ) -> Option<GenericContext<'db>> {
+            GenericContext::try_from_typevar_instances_in_program(
                 db,
                 generic_context.program(db),
                 generic_context.variables(db).filter(|bound_typevar| {
@@ -857,29 +887,16 @@ impl<'db> GenericContext<'db> {
             return_type.apply_type_mapping(db, &env, &type_mapping, TypeContext::default());
 
         // And lastly remove those typevars from the function's generic context.
-        let mut kept_typevars = generic_context
+        let kept_typevars = generic_context
             .variables(db)
-            .filter(|bound_typevar| !found_only_inside_callable_return.contains(bound_typevar))
-            .peekable();
-        let generic_context = if kept_typevars.peek().is_none() {
-            None
-        } else {
-            Some(GenericContext::from_typevar_instances(
-                db,
-                &env,
-                kept_typevars,
-            ))
-        };
+            .filter(|bound_typevar| !found_only_inside_callable_return.contains(bound_typevar));
+        let generic_context = GenericContext::try_from_typevar_instances(db, &env, kept_typevars);
 
         (generic_context, return_type)
     }
 
     pub(crate) fn len(self, db: &'db dyn Db) -> usize {
         self.variables_inner(db).len()
-    }
-
-    pub(crate) fn is_empty(self, db: &'db dyn Db) -> bool {
-        self.variables_inner(db).is_empty()
     }
 
     pub(crate) fn default_specialization(
@@ -2538,7 +2555,7 @@ pub(crate) struct TypeVarInference<'db> {
     /// Inferred types in generic-context order. Multiple solutions are union-merged per variable,
     /// including fallback types from incomplete solution families. This projection loses
     /// correlations and completeness; `solutions` retains that information. When correlated
-    /// solutions are unavailable, this hold the compatibility or diagnostic recovery mapping.
+    /// solutions are unavailable, this holds the compatibility or diagnostic recovery mapping.
     /// For ParamSpec, we currently hold the first parameter-list.
     #[returns(deref)]
     merged_types: Box<[Option<Type<'db>>]>,
@@ -3017,6 +3034,7 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         // TODO: Distinguish a ParamSpec binding lost to budget exhaustion from missing evidence.
         // Without that distinction, defaults can apply after budget exhaustion.
         for binding in solution {
+            // TODO: Remove this shortcut once merging ParamSpec solution alternatives is supported.
             if binding.bound_typevar.is_paramspec(db) {
                 types
                     .entry(binding.bound_typevar.identity(db))
@@ -4230,16 +4248,11 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                 // reveal_type(f(P[str]()))  # revealed: str
                 // reveal_type(f(Q[int]()))  # revealed: int
                 // ```
-                let mut first_error = None;
-                let mut found_matching_element = false;
-                for formal_element in union_formal.elements(db) {
-                    let result = self.infer_map_impl(*formal_element, actual, polarity, visitor);
-                    if let Err(err) = result {
-                        first_error.get_or_insert(err);
-                    } else {
-                        // The recursive call to `infer_map_impl` may succeed even if the actual type is
-                        // not assignable to the formal element.
-                        if !actual
+                let mut elements: SmallVec<[_; 2]> = union_formal
+                    .elements(db)
+                    .iter()
+                    .map(|formal_element| {
+                        let matches = !actual
                             .when_assignable_to(
                                 db,
                                 self.env,
@@ -4247,10 +4260,33 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                                 self.constraints,
                                 self.inferable,
                             )
-                            .is_never_satisfied(db, self.env, self.inferable)
-                        {
-                            found_matching_element = true;
-                        }
+                            .is_never_satisfied(db, self.env, self.inferable);
+
+                        (formal_element, matches)
+                    })
+                    .collect();
+
+                // When assigning to a union, we only preserve matching union members. If there
+                // are no members to which the source type is assignable, we preserve the entire
+                // union for diagnostics.
+                //
+                // In the reverse direction, all union members must be assignable to the target type.
+                if matches!(relation_polarity, TypeVarVariance::Covariant)
+                    && elements.iter().any(|(_, matches)| *matches)
+                {
+                    elements.retain(|(_, matches)| *matches);
+                }
+
+                let mut first_error = None;
+                let mut found_matching_element = false;
+                for (formal_element, matches) in elements {
+                    let result = self.infer_map_impl(*formal_element, actual, polarity, visitor);
+                    if let Err(err) = result {
+                        first_error.get_or_insert(err);
+                    } else {
+                        // The recursive call to `infer_map_impl` may succeed even if the actual type is
+                        // not assignable to the formal element.
+                        found_matching_element |= matches;
                     }
                 }
 
