@@ -2117,8 +2117,21 @@ impl<'db> ParamSpecValue<'db> {
         env: &ProgramEnvironment<'db>,
         map: &mut impl FnMut(Self) -> Option<Type<'db>>,
     ) -> Option<Type<'db>> {
-        Type::from(self)
-            .try_map_union_intersection(db, env, &mut |value| map(value.as_paramspec_value(db)?))
+        match self {
+            Self::Union(union) => union.try_map(db, env, |element| {
+                element.as_paramspec_value(db)?.try_map(db, env, map)
+            }),
+            Self::Intersection(intersection) if intersection.negative(db).is_empty() => {
+                let elements = intersection
+                    .positive(db)
+                    .iter()
+                    .map(|element| element.as_paramspec_value(db)?.try_map(db, env, map))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(IntersectionType::from_elements(db, env, elements))
+            }
+            Self::Intersection(_) => None,
+            Self::Callable(_) | Self::ParamSpec(_) => map(self),
+        }
     }
 
     /// Reifies captured parameter lists as callables for argument matching and checking.

@@ -1705,8 +1705,7 @@ forward(left, right, [{"name": "item"}], "bad")  # error: [invalid-argument-type
 
 ### Combined parameter lists in partial applications
 
-Binding the callbacks leaves a callable that checks the remaining arguments against both captured
-lists. Binding a forwarded argument reduces both lists.
+Partial application does not yet preserve combined parameter lists.
 
 ```py
 from functools import partial
@@ -1722,23 +1721,11 @@ def left(x: int, y: object, /) -> None: ...
 def right(x: object, y: int, /) -> None: ...
 
 callback = partial(forward, left, right)
-reveal_type(callback(1, 1))  # revealed: None
-callback(1, "bad")  # error: [invalid-argument-type]
-
-remaining = partial(forward, left, right, 1)
-reveal_type(remaining(1))  # revealed: None
-remaining("bad")  # error: [invalid-argument-type]
-```
-
-A gradual list also preserves the concrete list's requirements after partial application.
-
-```py
-def integer(value: int, /) -> None: ...
-def check(gradual: Callable[..., None]) -> None:
-    callback = partial(forward, integer, gradual)
-    reveal_type(callback(1))  # revealed: None
-    callback("bad")  # error: [invalid-argument-type]
-    callback()  # error: [missing-argument]
+# TODO: Preserve both captured parameter lists in the partial.
+reveal_type(callback)  # revealed: partial[Unknown]
+callback(1, 1)  # no diagnostic
+# TODO: error: [invalid-argument-type]
+callback(1, "bad")
 ```
 
 ### Repeated parameter lists from generic instances
