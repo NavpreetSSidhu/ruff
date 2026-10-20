@@ -39,6 +39,7 @@ bitflags::bitflags! {
         const IMPLEMENTATION_LINK_SUPPORT = 1 << 21;
         const TRIGGER_SIGNATURE_HELP_COMMAND = 1 << 22;
         const SEMANTIC_TOKENS_REFRESH = 1 << 23;
+        const PREFER_MARKDOWN_IN_SIGNATURE_HELP = 1 << 24;
     }
 }
 
@@ -153,6 +154,11 @@ impl ResolvedClientCapabilities {
     /// Returns `true` if the client supports per-signature active parameter in signature help.
     pub(crate) const fn supports_signature_active_parameter(self) -> bool {
         self.contains(Self::SIGNATURE_ACTIVE_PARAMETER_SUPPORT)
+    }
+
+    /// Returns `true` if the client prefers Markdown in signature help documentation.
+    pub(crate) const fn prefers_markdown_in_signature_help(self) -> bool {
+        self.contains(Self::PREFER_MARKDOWN_IN_SIGNATURE_HELP)
     }
 
     /// Returns `true` if the client supports hierarchical document symbols.
@@ -349,6 +355,15 @@ impl ResolvedClientCapabilities {
             == Some(&MarkupKind::Markdown)
         {
             flags |= Self::PREFER_MARKDOWN_IN_COMPLETION;
+        }
+
+        if text_document
+            .and_then(|document| document.signature_help.as_ref())
+            .and_then(|signature_help| signature_help.signature_information.as_ref())
+            .and_then(|signature| preferred_markup_kind(signature.documentation_format.as_deref()?))
+            == Some(&MarkupKind::Markdown)
+        {
+            flags |= Self::PREFER_MARKDOWN_IN_SIGNATURE_HELP;
         }
 
         if text_document
