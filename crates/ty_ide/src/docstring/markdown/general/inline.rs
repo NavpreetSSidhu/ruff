@@ -54,12 +54,18 @@ use ruff_text_size::{Ranged, TextSize};
 use crate::docstring::document::syntax::BacktickScanner;
 
 /// Exposes an interface for rendering a line of prose that may contain a hyperlink.
-#[derive(Default)]
-pub(super) struct Renderer {
+pub(super) struct Renderer<'tags> {
     pending_link: Option<PendingLink>,
+    allowed_html_tags: &'tags [String],
 }
 
-impl Renderer {
+impl<'tags> Renderer<'tags> {
+    pub(super) fn new(allowed_html_tags: &'tags [String]) -> Self {
+        Self {
+            pending_link: None,
+            allowed_html_tags,
+        }
+    }
     /// Renders a prose line, buffering a supported wrapped hyperlink when necessary.
     pub(super) fn render_line(&mut self, output: &mut String, line: Line<'_>) {
         if let Some(pending_link) = self.pending_link.take() {
@@ -77,7 +83,7 @@ impl Renderer {
     ) {
         self.flush_pending_link(output);
         output.push_str(line.rendered_prefix);
-        render_inline_text(output, line.text);
+        render_inline_text(output, line.text, self.allowed_html_tags);
     }
 
     /// Returns whether a wrapped hyperlink candidate is buffered.
@@ -120,7 +126,7 @@ impl Renderer {
         // Buffer ordinary continuation lines without reparsing the entire
         // source, which would make long wrapped links increasingly expensive.
         if !line.text.contains(['`', '\\']) {
-            pending_link.push_fallback_line(line);
+            pending_link.push_fallback_line(line, self.allowed_html_tags);
             self.pending_link = Some(pending_link);
             return;
         }
@@ -141,7 +147,7 @@ impl Renderer {
             Some(Candidate::Pending) => {
                 // Keep the parsed source and fallback rendering in sync while
                 // the candidate remains unresolved.
-                pending_link.push_fallback_line(line);
+                pending_link.push_fallback_line(line, self.allowed_html_tags);
                 self.pending_link = Some(pending_link);
             }
             Some(Candidate::Complete(_)) | None => {
@@ -162,7 +168,7 @@ impl Renderer {
                 Some((start, Candidate::Complete(link))) => {
                     output.push_str(prefix);
                     prefix = "";
-                    render_inline_text(output, &rest[..start]);
+                    render_inline_text(output, &rest[..start], self.allowed_html_tags);
                     link.render_markdown(output);
                     rest = &rest[start + link.len..];
                 }
@@ -172,12 +178,13 @@ impl Renderer {
                         rest,
                         start,
                         line.source_indentation,
+                        self.allowed_html_tags,
                     ));
                     return;
                 }
                 None => {
                     output.push_str(prefix);
-                    render_inline_text(output, rest);
+                    render_inline_text(output, rest, self.allowed_html_tags);
                     return;
                 }
             }
@@ -220,14 +227,19 @@ impl PendingLink {
         line: &str,
         candidate_start: usize,
         minimum_indentation: usize,
+        allowed_html_tags: &[String],
     ) -> Self {
         let mut rendered_before = String::with_capacity(rendered_prefix.len() + candidate_start);
         rendered_before.push_str(rendered_prefix);
-        render_inline_text(&mut rendered_before, &line[..candidate_start]);
+        render_inline_text(
+            &mut rendered_before,
+            &line[..candidate_start],
+            allowed_html_tags,
+        );
 
         let mut fallback = String::with_capacity(rendered_prefix.len() + line.len());
         fallback.push_str(rendered_prefix);
-        render_inline_text(&mut fallback, line);
+        render_inline_text(&mut fallback, line, allowed_html_tags);
 
         let source = line[candidate_start..].to_owned();
         Self {
@@ -262,9 +274,9 @@ impl PendingLink {
     }
 
     /// Adds `line` to the speculative rendering used if conversion is abandoned.
-    fn push_fallback_line(&mut self, line: Line<'_>) {
+    fn push_fallback_line(&mut self, line: Line<'_>, allowed_html_tags: &[String]) {
         self.fallback.push_str(line.rendered_prefix);
-        render_inline_text(&mut self.fallback, line.text);
+        render_inline_text(&mut self.fallback, line.text, allowed_html_tags);
     }
 }
 
@@ -534,7 +546,7 @@ fn render_markdown_link(output: &mut String, label: Option<&str>, uri: &str) {
 /// we only have to detect one type of code span.
 ///
 /// Inline code is assumed not to span lines.
-fn render_inline_text(output: &mut String, text: &str) {
+fn render_inline_text(output: &mut String, text: &str, allowed_html_tags: &[String]) {
     let mut in_inline_code = false;
     let mut first_chunk = true;
     let mut opening_tick_count = 0;
@@ -544,7 +556,7 @@ fn render_inline_text(output: &mut String, text: &str) {
         // First chunk is definitionally not in inline-code and so always plaintext.
         if first_chunk {
             first_chunk = false;
-            push_escaped_markdown_text(output, chunk);
+            push_escaped_markdown_text(output, chunk, allowed_html_tags);
             continue;
         }
 
@@ -586,23 +598,112 @@ fn render_inline_text(output: &mut String, text: &str) {
         if in_inline_code {
             output.push_str(chunk);
         } else {
-            push_escaped_markdown_text(output, chunk);
+            push_escaped_markdown_text(output, chunk, allowed_html_tags);
         }
     }
     // NOTE: explicitly not "flushing" the ticks here.
     // We respect however the user closed their inline code.
 }
 
-fn push_escaped_markdown_text(output: &mut String, input: &str) {
-    for char in input.chars() {
+fn push_escaped_markdown_text(output: &mut String, mut input: &str, allowed_html_tags: &[String]) {
+    while let Some(char) = input.chars().next() {
+        if char == '<'
+            && let Some(len) = supported_html_tag_len(input, allowed_html_tags)
+        {
+            output.push_str(&input[..len]);
+            input = &input[len..];
+            continue;
+        }
+
         match char {
             '&' => output.push_str("&amp;"),
             '<' => output.push_str("&lt;"),
             '>' => output.push_str("&gt;"),
+            // Backslash escapes are displayed literally inside Markdown HTML blocks.
+            '_' if !allowed_html_tags.is_empty() => {
+                // An odd number of backslashes would escape the entity's `&` in Markdown.
+                let backslashes = output.len() - output.trim_end_matches('\\').len();
+                if backslashes % 2 == 1 {
+                    output.pop();
+                    output.push_str("&#92;");
+                }
+                output.push_str("&#95;");
+            }
             '_' => output.push_str("\\_"),
             _ => output.push(char),
         }
+        input = &input[char.len_utf8()..];
     }
+}
+
+/// Returns the length of a complete tag with a supported name, without validating its attributes.
+fn supported_html_tag_len(input: &str, allowed_html_tags: &[String]) -> Option<usize> {
+    // Limit recognition so placeholders such as `<scheme>` remain text.
+    const SUPPORTED_TAGS: &[&str] = &[
+        "a",
+        "b",
+        "blockquote",
+        "br",
+        "code",
+        "del",
+        "div",
+        "em",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "span",
+        "strong",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    ];
+
+    let rest = input.strip_prefix('<')?;
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+
+    let name_end = rest.find(|c: char| !c.is_ascii_alphanumeric())?;
+    let name = &rest[..name_end];
+    if !SUPPORTED_TAGS
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case(name))
+        || !allowed_html_tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+    let rest = &rest[name_end..];
+    if !rest.starts_with(['>', '/', ' ', '\t']) {
+        return None;
+    }
+
+    let mut quote = None;
+    for (index, char) in rest.char_indices() {
+        match char {
+            // Stop at the next tag candidate so malformed tags do not cause repeated scans.
+            '<' => return None,
+            '\'' | '"' if quote == Some(char) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(char),
+            '>' if quote.is_none() => return Some(input.len() - rest.len() + index + 1),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn push_link_label(output: &mut String, input: &str) {
@@ -651,6 +752,53 @@ fn push_link_destination(output: &mut String, input: &str) {
 #[cfg(test)]
 mod tests {
     use super::render_inline_text;
+
+    #[test]
+    fn preserves_only_complete_html_tags_supported_by_the_client() {
+        let allowed_tags = ["p", "a", "b", "i", "code", "br", "script"].map(str::to_string);
+        for (input, expected) in [
+            (
+                "<p>hello <code>name</code></p>",
+                "<p>hello <code>name</code></p>",
+            ),
+            ("<P>hello<br /></P>", "<P>hello<br /></P>"),
+            (
+                "<b>bold</b> and <i>italic</i>",
+                "<b>bold</b> and <i>italic</i>",
+            ),
+            ("<p>file_name</p>", "<p>file&#95;name</p>"),
+            (r"C:\_private", "C:&#92;&#95;private"),
+            (r"C:\\_private", r"C:\\&#95;private"),
+            (r"C:\\\_private", r"C:\\&#92;&#95;private"),
+            (r"<p>C:\_private</p>", "<p>C:&#92;&#95;private</p>"),
+            (
+                "<a href=\"https://example.com/a_b?x=1&y=2\" title='a > b'>link</a>",
+                "<a href=\"https://example.com/a_b?x=1&y=2\" title='a > b'>link</a>",
+            ),
+            (
+                "<a href=https://example.com title='café > tea'>link</a>",
+                "<a href=https://example.com title='café > tea'>link</a>",
+            ),
+            (
+                "<strong>bold</strong> <scheme> <script>alert(1)</script>",
+                "&lt;strong&gt;bold&lt;/strong&gt; &lt;scheme&gt; &lt;script&gt;alert(1)&lt;/script&gt;",
+            ),
+            ("<p=placeholder>", "&lt;p=placeholder&gt;"),
+            (
+                "<p extra <script>> <a href=\"unterminated>",
+                "&lt;p extra &lt;script&gt;&gt; &lt;a href=\"unterminated&gt;",
+            ),
+            (
+                "<a title='broken <p>text</p>",
+                "&lt;a title='broken <p>text</p>",
+            ),
+            ("`<p>_literal_</p>`", "`<p>_literal_</p>`"),
+        ] {
+            let mut output = String::new();
+            render_inline_text(&mut output, input, &allowed_tags);
+            assert_eq!(output, expected, "{input:?}");
+        }
+    }
 
     #[test]
     fn renders_supported_single_line_links() {
@@ -878,13 +1026,13 @@ localization
 
     fn render_docstring(source: &str) -> String {
         let mut output = String::new();
-        super::super::render_into(&mut output, source);
+        super::super::render_into(&mut output, source, &[]);
         output
     }
 
     fn render_fragment(source: &str) -> String {
         let mut output = String::new();
-        super::super::render_fragment_into(&mut output, source);
+        super::super::render_fragment_into(&mut output, source, &[]);
         output
     }
 
@@ -900,7 +1048,7 @@ localization
             for _ in 0..line.len() - text.len() {
                 output.push_str("&nbsp;");
             }
-            render_inline_text(&mut output, text);
+            render_inline_text(&mut output, text, &[]);
         }
         output
     }

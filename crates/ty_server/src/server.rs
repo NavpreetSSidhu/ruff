@@ -163,7 +163,7 @@ impl Server {
             main_loop_receiver,
             main_loop_sender,
             session: Session::new(
-                resolved_client_capabilities,
+                &client_capabilities,
                 position_encoding,
                 workspace_urls,
                 initialization_options,

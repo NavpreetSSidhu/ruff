@@ -26,11 +26,13 @@ impl Docstring {
         Docstring(raw)
     }
 
-    /// Render the docstring to the given markup format
-    pub fn render(&self, kind: MarkupKind) -> String {
+    /// Render the docstring to the given format, preserving HTML tags supported by the client.
+    pub fn render(&self, kind: MarkupKind, allowed_html_tags: &[String]) -> String {
         match kind {
             MarkupKind::PlainText => self.render_plaintext(),
-            MarkupKind::Markdown => self.render_markdown(),
+            MarkupKind::Markdown => {
+                markdown::render(&documentation_trim(&self.0), allowed_html_tags)
+            }
         }
     }
 
@@ -41,8 +43,7 @@ impl Docstring {
 
     /// Render the docstring for markdown display
     pub fn render_markdown(&self) -> String {
-        let trimmed = documentation_trim(&self.0);
-        markdown::render(&trimmed)
+        self.render(MarkupKind::Markdown, &[])
     }
 
     /// Extract parameter documentation from popular docstring formats.
@@ -64,10 +65,11 @@ impl DocstringFragment {
         Self(documentation_fragment_trim(raw))
     }
 
-    pub fn render(&self, kind: MarkupKind) -> String {
+    /// Render the fragment to the given format, preserving HTML tags supported by the client.
+    pub fn render(&self, kind: MarkupKind, allowed_html_tags: &[String]) -> String {
         match kind {
             MarkupKind::PlainText => self.0.clone(),
-            MarkupKind::Markdown => self.render_markdown(),
+            MarkupKind::Markdown => self.render_markdown(allowed_html_tags),
         }
     }
 }
@@ -260,6 +262,31 @@ Summary.
         <HB>
         So does `inline <code>`.
         "#);
+    }
+
+    #[test]
+    fn preserves_supported_html_in_structured_documentation() {
+        let docstring = Docstring::new(
+            "Summary: <p>file_name</p>\n\nArgs:\n    path: A <code>file_name</code>.".to_string(),
+        );
+        let tags = ["p", "code"].map(str::to_string);
+
+        let rendered = docstring.render(MarkupKind::Markdown, &tags);
+        let fragment = DocstringFragment::new("A <code>file_name</code>.");
+
+        assert!(rendered.contains("<p>file&#95;name</p>"), "{rendered}");
+        assert!(
+            rendered.contains("<code>file&#95;name</code>"),
+            "{rendered}"
+        );
+        assert_eq!(
+            fragment.render(MarkupKind::Markdown, &tags),
+            "A <code>file&#95;name</code>."
+        );
+        assert_eq!(
+            fragment.render(MarkupKind::Markdown, &[]),
+            "A &lt;code&gt;file\\_name&lt;/code&gt;."
+        );
     }
 
     // A literal block where the `::` is flush with the paragraph

@@ -8,9 +8,9 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use lsp_server::{Message, RequestId};
 use lsp_types::{
-    ClientInfo, DiagnosticProvider, DiagnosticRegistrationOptions, Registration,
-    RegistrationParams, TextDocumentContentChangeEvent, Unregistration, UnregistrationParams, Uri,
-    WorkDoneProgressBegin,
+    ClientCapabilities, ClientInfo, DiagnosticProvider, DiagnosticRegistrationOptions,
+    Registration, RegistrationParams, TextDocumentContentChangeEvent, Unregistration,
+    UnregistrationParams, Uri, WorkDoneProgressBegin,
 };
 use lsp_types::{
     DocumentDiagnosticRequest, RegistrationRequest, Request, ShutdownRequest,
@@ -107,6 +107,9 @@ pub(crate) struct Session {
     /// Tracks what LSP features the client supports and doesn't support.
     resolved_client_capabilities: ResolvedClientCapabilities,
 
+    /// HTML tags the client allows in Markdown.
+    allowed_html_tags: Arc<[String]>,
+
     /// Tracks the pending requests between client and server.
     request_queue: RequestQueue,
 
@@ -167,7 +170,7 @@ pub(crate) struct ProjectState {
 
 impl Session {
     pub(crate) fn new(
-        resolved_client_capabilities: ResolvedClientCapabilities,
+        client_capabilities: &ClientCapabilities,
         position_encoding: PositionEncoding,
         workspace_uris: Vec<Uri>,
         initialization_options: InitializationOptions,
@@ -185,9 +188,18 @@ impl Session {
         }
 
         let use_uv = initialization_options.use_uv(&*native_system);
+        let resolved_client_capabilities = ResolvedClientCapabilities::new(client_capabilities);
 
         Ok(Self {
             native_system,
+            allowed_html_tags: client_capabilities
+                .general
+                .as_ref()
+                .and_then(|general| general.markdown.as_ref())
+                .and_then(|markdown| markdown.allowed_tags.as_ref())
+                .cloned()
+                .unwrap_or_default()
+                .into(),
             position_encoding,
             workspaces,
             workspace_configuration_initialized: false,
@@ -1227,6 +1239,7 @@ impl Session {
 
         Ok(DocumentSnapshot {
             resolved_client_capabilities: self.resolved_client_capabilities,
+            allowed_html_tags: self.allowed_html_tags.clone(),
             global_settings: self.global_settings.clone(),
             workspace_settings: self
                 .project_state_for_document(document.notebook_or_file_path())
@@ -1523,6 +1536,7 @@ impl Drop for MutIndexGuard<'_> {
 #[derive(Debug)]
 pub(crate) struct DocumentSnapshot {
     resolved_client_capabilities: ResolvedClientCapabilities,
+    allowed_html_tags: Arc<[String]>,
     global_settings: Arc<GlobalSettings>,
     workspace_settings: Arc<WorkspaceSettings>,
     position_encoding: PositionEncoding,
@@ -1534,6 +1548,10 @@ impl DocumentSnapshot {
     /// Returns the resolved client capabilities that were captured during initialization.
     pub(crate) fn resolved_client_capabilities(&self) -> ResolvedClientCapabilities {
         self.resolved_client_capabilities
+    }
+
+    pub(crate) fn allowed_html_tags(&self) -> &[String] {
+        &self.allowed_html_tags
     }
 
     /// Returns the position encoding that was negotiated during initialization.

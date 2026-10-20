@@ -61,7 +61,9 @@ impl BackgroundDocumentRequestHandler for HoverRequestHandler {
             (MarkupKind::PlainText, lsp_types::MarkupKind::PlainText)
         };
 
-        let contents = range_info.display(db, markup_kind).to_string();
+        let contents = range_info
+            .display(db, markup_kind, snapshot.allowed_html_tags())
+            .to_string();
 
         Ok(Some(lsp_types::Hover {
             contents: MarkupContent {
