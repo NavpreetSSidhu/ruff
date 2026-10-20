@@ -153,8 +153,8 @@ pub(super) fn non_alias_assignment<'db>(
                 | Type::GenericAlias(_)
                 | Type::SpecialForm(_)
                 | Type::KnownInstance(KnownInstanceType::TypeAliasType(_))
-        ) && !forwarding_alias_definition(db, definition, &subscript.value)
-            .is_some_and(|target| non_alias_assignment(db, target, base).is_some())
+        ) && forwarding_alias_definition(db, definition, &subscript.value)
+            .is_none_or(|target| non_alias_assignment(db, target, base).is_none())
         {
             return None;
         }
