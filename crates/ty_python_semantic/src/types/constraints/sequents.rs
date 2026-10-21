@@ -1681,7 +1681,8 @@ impl<'db> ConcreteUpperBound<'db> {
         }
 
         // (β ≤ α) ⇒ ((T = β) ⇒ (T ≤ α))
-        // Likewise, `T = Any` does not imply `T ≤ int`, even though `Any` is assignable to `int`.
+        // This requires a static equivalence bound: `T = Any` permits `T = str`, so
+        // assignability of `Any` to `int` does not imply `T ≤ int`.
         if other.bound.is_static_sequent_eligible(db, env)
             && other
                 .bound
