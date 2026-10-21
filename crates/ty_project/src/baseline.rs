@@ -75,7 +75,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::Hasher;
-use std::io;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -134,18 +133,8 @@ pub fn diagnostic_is_eligible(db: &dyn Db, diagnostic: &Diagnostic) -> bool {
 }
 
 /// Writes a new baseline containing all eligible diagnostics.
-///
-/// With explicit check paths, replaces entries only for indexed files, including files that no
-/// longer have diagnostics. Other entries are preserved. Without explicit paths, regenerates the
-/// entire baseline, so stale entries can be removed and invalid baselines can be replaced.
 pub fn write(db: &dyn Db, path: &SystemPath, diagnostics: &[Diagnostic]) -> anyhow::Result<usize> {
-    let mut baseline = BaselineFile::from_diagnostics(db, diagnostics);
-    if !db.project().included_paths_list(db).is_empty() {
-        baseline.preserve_unchecked_files(db, path).context(
-            "Failed to preserve entries for unchecked files; omit check paths to regenerate the entire baseline",
-        )?;
-    }
-    baseline.write(db, path)
+    BaselineFile::from_diagnostics(db, diagnostics).write(db, path)
 }
 
 /// Returns the baseline for `file` without depending on the query when baselines are disabled.
@@ -250,36 +239,6 @@ impl BaselineFile {
             version: BASELINE_VERSION,
             files,
         }
-    }
-
-    fn preserve_unchecked_files(&mut self, db: &dyn Db, path: &SystemPath) -> anyhow::Result<()> {
-        let source = match db.system().read_to_string(path) {
-            Ok(source) => source,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => {
-                return Err(error).with_context(|| format!("Failed to read baseline `{path}`"));
-            }
-        };
-        let mut previous: Self = serde_json::from_str(&source)
-            .with_context(|| format!("Failed to parse baseline `{path}`"))?;
-        anyhow::ensure!(
-            previous.version == BASELINE_VERSION,
-            "Unsupported baseline version `{}`",
-            previous.version
-        );
-
-        // Use the checked file set rather than the diagnostics so that fixing every error in a
-        // file also removes its old entries. Files excluded from a selected directory stay intact.
-        for file in db.project().files(db).iter() {
-            if let Some(path) = project_relative_path(db, file) {
-                previous
-                    .files
-                    .remove(SystemPath::new(&path.as_str().replace('\\', "/")));
-            }
-        }
-        previous.files.append(&mut self.files);
-        *self = previous;
-        Ok(())
     }
 
     fn write(self, db: &dyn Db, path: &SystemPath) -> anyhow::Result<usize> {
