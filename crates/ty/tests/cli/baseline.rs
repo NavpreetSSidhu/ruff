@@ -38,11 +38,20 @@ fn update_and_use_configured_baseline() -> anyhow::Result<()> {
 
     let serialized = fs::read_to_string(case.root().join("baseline.json"))?;
     assert!(serialized.ends_with('\n'));
-    let value: serde_json::Value = serde_json::from_str(&serialized)?;
-    assert_eq!(value["version"], 0);
-    assert_eq!(value["files"]["test.py"].as_array().unwrap().len(), 1);
-    assert_eq!(value["files"]["test.py"][0]["rule"], "invalid-assignment");
-    assert!(value["files"]["test.py"][0].get("message").is_none());
+    assert_snapshot!(serialized, @r#"
+    {
+      "version": 0,
+      "files": {
+        "test.py": [
+          {
+            "rule": "invalid-assignment",
+            "precedingHash": "33af5dcbb4264a903ea8237661d2e9d2",
+            "followingHash": "9e9c1756bed4a360466ffdead18fa6a2"
+          }
+        ]
+      }
+    }
+    "#);
 
     assert_cmd_snapshot!(case.command(), @"
     success: true
@@ -246,13 +255,26 @@ fn baseline_json_is_path_keyed() -> anyhow::Result<()> {
     ");
 
     let baseline = fs::read_to_string(case.root().join("baseline.json"))?;
-    assert_snapshot!(baseline.lines().take(6).collect::<Vec<_>>().join("\n"), @r#"
+    assert_snapshot!(baseline, @r#"
     {
       "version": 0,
       "files": {
         "a.py": [
           {
             "rule": "invalid-assignment",
+            "precedingHash": "83c4a5b75d1fd7d8f418cc889df720b3",
+            "followingHash": "cfd18b7b7e8b411ea044878c0e8b6771"
+          }
+        ],
+        "b.py": [
+          {
+            "rule": "invalid-assignment",
+            "precedingHash": "6f98698e5bc8353e7a4c5d89deb7ff14",
+            "followingHash": "799da6a5d8e28b745c49494de187b60a"
+          }
+        ]
+      }
+    }
     "#);
     Ok(())
 }

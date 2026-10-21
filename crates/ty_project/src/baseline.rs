@@ -1,20 +1,65 @@
 //! Loads, matches, and writes diagnostic baselines.
 //!
-//! A diagnostic can move when code is added or removed. Its source offset alone cannot identify
-//! the same diagnostic across revisions. ty instead uses nearby source text, based on section III-C
-//! of [*Tracking Static Analysis Violations Over Time to Capture Developer Characteristics*][paper].
+//! A baseline records existing diagnostics so that users can focus on new ones. To recognize
+//! diagnostics after edits shift their source positions, ty matches them by file, rule, and
+//! nearby source text. The context hashes are inspired by section III-C of
+//! [*Tracking Static Analysis Violations Over Time to Capture Developer Characteristics*][paper].
 //!
-//! Each baseline entry contains a lint rule and two hashes. Each hash includes up to 100 characters.
-//! Line breaks are kept and normalized to `\n`. Other whitespace is ignored. The first hash reads
-//! backward from the end of the first word in the diagnostic. The second hash reads forward from
-//! the beginning of the same word. Including this word in both hashes ties both hashes to the
-//! diagnostic itself. Either hash can still match when the other changes. Ignoring other whitespace
-//! keeps the hashes stable when formatting or indentation changes.
+//! Each baseline entry stores two hashes of the source text around the diagnostic. A match requires
+//! the same file and rule and at least one matching hash. Each entry can match only once.
+//! Matched diagnostics are demoted to [`Severity::Hint`]; callers decide whether to display them.
 //!
-//! A diagnostic matches an entry when the file and rule are the same and either hash matches.
-//! Diagnostics and entries are matched in source order. Each entry matches at most one diagnostic.
-//! A match changes the diagnostic's severity to [`Severity::Hint`]. The caller decides whether to
-//! show hints.
+//! # Context hashes
+//!
+//! Both hashes are anchored at the word containing the start of the diagnostic's primary range;
+//! the range's end is unused. A word is a run of alphanumeric characters or underscores. Any other
+//! character takes the place of the word. The preceding hash reads backward from the word's end;
+//! the following hash reads forward from its beginning.
+//!
+//! Each window contains up to 100 normalized Unicode scalar values, including the overlapping
+//! word. Windows can cross lines and stop at file boundaries; the limit also applies to long words.
+//!
+//! For a diagnostic covering `get_name(first, last)` in the assignment below, the normalized
+//! windows have these boundaries; the ellipses stand for surrounding source text:
+//!
+//! ```text
+//! source:    name: int = get_name(first, last)
+//! preceding: ...name:int=get_name
+//! following: get_name(first,last)...
+//! ```
+//!
+//! Accepting either hash lets a match survive an edit on one side of the diagnostic. Overlapping
+//! the first word ensures the preceding hash includes part of the diagnostic itself: changing
+//! `get_name` to `get_count` changes both hashes. This also means a harmless rename can resurface a
+//! diagnostic; text alone cannot distinguish a rename from a call to a different function.
+//!
+//! We ignore non-newline whitespace to tolerate changes to spacing and indentation. Newlines are
+//! preserved because they can terminate Python statements: `return` followed by `value` on the next
+//! line behaves differently from `return value`, yet removing all whitespace would erase that
+//! distinction. LF, CRLF, and CR are normalized to `\n`, which counts toward the character limit.
+//! Without a lexer, we also preserve newlines inside parentheses, so harmless line wrapping can
+//! change a hash and resurface a diagnostic.
+//!
+//! The 100-character limit balances distinguishing similar diagnostics against sensitivity to
+//! nearby edits. Evaluations of related fingerprint variants on Home Assistant and Airflow informed
+//! this choice: shorter character windows confused similar diagnostics, while a 100-token trial
+//! using a rough word/punctuation tokenizer covered more surrounding code and resurfaced many more
+//! existing diagnostics for little improvement in detecting new ones. Unlike the paper's token
+//! windows, character windows also avoid lexing. These results do not establish an optimal length
+//! for every project.
+//!
+//! # Unordered matching
+//!
+//! We match without an ordering constraint so that moving code can preserve existing suppressions.
+//! For example, baseline `A, B` can match current diagnostics `B, A` if their hashes still match.
+//!
+//! Current diagnostics are processed in source order. Each consumes the first unused baseline entry
+//! with the same rule and either matching hash; skipped entries remain available. This is a greedy,
+//! one-to-one match: one entry cannot suppress additional occurrences. Identical fingerprints can
+//! still make an existing diagnostic indistinguishable from a new one.
+//!
+//! Most entries match in sequence. A cursor tracks that common case; a consumed-entry mask is
+//! allocated only when a match skips entries that must remain available for later diagnostics.
 //!
 //! # Format versions
 //!
@@ -72,9 +117,9 @@ pub(crate) fn demote_diagnostics(db: &dyn Db, file: File, diagnostics: &mut [Dia
         .collect();
     entries.sort_by(|(_, left), (_, right)| left.cmp(right));
 
-    let mut remaining = baseline_entries;
+    let mut matcher = BaselineMatcher::new(baseline_entries);
     for (index, entry) in entries {
-        if consume_matching_entry(&mut remaining, &entry) {
+        if matcher.consume(&entry) {
             diagnostics[index].set_severity(Severity::Hint);
         }
     }
@@ -311,16 +356,54 @@ impl BaselineDiagnostic {
     }
 }
 
-fn consume_matching_entry(baseline: &mut &[BaselineEntry], current: &BaselineEntry) -> bool {
-    let Some(index) = baseline
-        .iter()
-        .position(|entry| two_hash_matches(entry, current))
-    else {
-        return false;
-    };
+struct BaselineMatcher<'a> {
+    entries: &'a [BaselineEntry],
+    next: usize,
+    consumed: Vec<bool>,
+}
 
-    *baseline = &baseline[index + 1..];
-    true
+impl<'a> BaselineMatcher<'a> {
+    fn new(entries: &'a [BaselineEntry]) -> Self {
+        Self {
+            entries,
+            next: 0,
+            consumed: Vec::new(),
+        }
+    }
+
+    fn consume(&mut self, current: &BaselineEntry) -> bool {
+        let remaining = &self.entries[self.next..];
+        // `next` always points to the first unused entry. Most diagnostics match it,
+        // so they need neither a search nor an allocation to track consumed entries.
+        if let Some(entry) = remaining.first()
+            && two_hash_matches(entry, current)
+        {
+            self.next += 1;
+            while self.consumed.get(self.next) == Some(&true) {
+                self.next += 1;
+            }
+            return true;
+        }
+
+        let Some((offset, _)) = remaining
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|(offset, entry)| {
+                self.consumed.get(self.next + offset) != Some(&true)
+                    && two_hash_matches(entry, current)
+            })
+        else {
+            return false;
+        };
+
+        // Entries before `next` are excluded from searches, so they need no mask bits.
+        if self.consumed.is_empty() {
+            self.consumed.resize(self.entries.len(), false);
+        }
+        self.consumed[self.next + offset] = true;
+        true
+    }
 }
 
 fn two_hash_matches(baseline: &BaselineEntry, current: &BaselineEntry) -> bool {
@@ -474,9 +557,8 @@ mod tests {
     use ty_python_semantic::Db as _;
 
     use super::{
-        BaselineEntry, BaselineFile, BaselineHash, Error, HashDirection, baseline, baselines,
-        consume_matching_entry, context_hashes, demote_diagnostics, stable_hash, two_hash_matches,
-        write,
+        BaselineEntry, BaselineFile, BaselineHash, BaselineMatcher, Error, HashDirection, baseline,
+        baselines, context_hashes, demote_diagnostics, stable_hash, two_hash_matches, write,
     };
 
     fn entry(rule: &str, preceding: &str, following: &str) -> BaselineEntry {
@@ -651,25 +733,43 @@ mod tests {
     }
 
     #[test]
-    fn ordered_matching_preserves_duplicate_cardinality() {
+    fn matching_preserves_duplicate_cardinality() {
         let duplicate = entry("rule", "before", "after");
         let baseline = [duplicate.clone(), duplicate.clone()];
-        let mut remaining = baseline.as_slice();
+        let mut matcher = BaselineMatcher::new(&baseline);
 
-        assert!(consume_matching_entry(&mut remaining, &duplicate));
-        assert!(consume_matching_entry(&mut remaining, &duplicate));
-        assert!(!consume_matching_entry(&mut remaining, &duplicate));
+        assert!(matcher.consume(&duplicate));
+        assert!(matcher.consume(&duplicate));
+        assert!(!matcher.consume(&duplicate));
     }
 
     #[test]
-    fn matching_preserves_diagnostic_order() {
+    fn matching_allows_reordered_diagnostics() {
         let first = entry("rule", "first-before", "first-after");
         let second = entry("rule", "second-before", "second-after");
         let baseline = [first.clone(), second.clone()];
-        let mut remaining = baseline.as_slice();
+        let mut matcher = BaselineMatcher::new(&baseline);
 
-        assert!(consume_matching_entry(&mut remaining, &second));
-        assert!(!consume_matching_entry(&mut remaining, &first));
+        assert!(matcher.consume(&second));
+        assert!(matcher.consume(&first));
+    }
+
+    #[test]
+    fn matching_retains_skipped_entries_after_matching_prefix() {
+        let prefix = entry("prefix-rule", "prefix-before", "prefix-after");
+        let first = entry("rule", "first-before", "first-after");
+        let second = entry("other-rule", "second-before", "second-after");
+        let new = entry("rule", "new-before", "new-after");
+        let baseline = [prefix.clone(), first.clone(), second.clone(), first.clone()];
+        let mut matcher = BaselineMatcher::new(&baseline);
+
+        assert!(matcher.consume(&prefix));
+        assert!(!matcher.consume(&new));
+        assert!(matcher.consume(&second));
+        assert!(!matcher.consume(&second));
+        assert!(matcher.consume(&first));
+        assert!(matcher.consume(&first));
+        assert!(!matcher.consume(&first));
     }
 
     fn test_db_with_baseline() -> TestDb {
