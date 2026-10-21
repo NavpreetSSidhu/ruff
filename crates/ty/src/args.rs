@@ -82,6 +82,9 @@ pub(crate) struct CheckCommand {
     baseline: Option<SystemPathBuf>,
 
     /// Regenerate the configured diagnostic baseline.
+    ///
+    /// When files or directories are specified, update only the checked files and preserve
+    /// entries for unchecked files. Omit paths to regenerate the entire baseline.
     #[arg(long, conflicts_with_all = ["watch", "fix", "add_ignore"])]
     pub(crate) update_baseline: bool,
 

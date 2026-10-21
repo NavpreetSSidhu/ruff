@@ -108,7 +108,8 @@ over all configuration files.</p>
 </ul></dd><dt id="ty-check--quiet"><a href="#ty-check--quiet"><code>--quiet</code></a>, <code>-q</code></dt><dd><p>Use quiet output (or <code>-qq</code> for silent output)</p>
 </dd><dt id="ty-check--respect-ignore-files"><a href="#ty-check--respect-ignore-files"><code>--respect-ignore-files</code></a></dt><dd><p>Respect file exclusions via <code>.gitignore</code> and other standard ignore files. Use <code>--no-respect-ignore-files</code> to disable</p>
 </dd><dt id="ty-check--typeshed"><a href="#ty-check--typeshed"><code>--typeshed</code></a>, <code>--custom-typeshed-dir</code> <i>path</i></dt><dd><p>Custom directory to use for stdlib typeshed stubs</p>
-</dd><dt id="ty-check--update-baseline"><a href="#ty-check--update-baseline"><code>--update-baseline</code></a></dt><dd><p>Regenerate the configured diagnostic baseline</p>
+</dd><dt id="ty-check--update-baseline"><a href="#ty-check--update-baseline"><code>--update-baseline</code></a></dt><dd><p>Regenerate the configured diagnostic baseline.</p>
+<p>When files or directories are specified, update only the checked files and preserve entries for unchecked files. Omit paths to regenerate the entire baseline.</p>
 </dd><dt id="ty-check--verbose"><a href="#ty-check--verbose"><code>--verbose</code></a>, <code>-v</code></dt><dd><p>Use verbose output (or <code>-vv</code> and <code>-vvv</code> for more verbose output)</p>
 </dd><dt id="ty-check--warn"><a href="#ty-check--warn"><code>--warn</code></a> <i>rule</i></dt><dd><p>Treat the given rule as having severity 'warn'. Can be specified multiple times. Use 'all' to apply to all rules.</p>
 </dd><dt id="ty-check--watch"><a href="#ty-check--watch"><code>--watch</code></a>, <code>-W</code></dt><dd><p>Watch files for changes and recheck files related to the changed files</p>
