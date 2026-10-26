@@ -1530,6 +1530,29 @@ def narrow_literal_string_with_enum(value: LiteralString | None):
         reveal_type(value)  # revealed: Literal["red"]
 ```
 
+A string literal or enum member compared with a `LiteralString` is not narrowed, because the
+`LiteralString` may hold any other string:
+
+```py
+from enum import StrEnum
+from typing_extensions import Literal, LiteralString
+
+class Color(StrEnum):
+    RED = "red"
+
+def narrow_literal_against_literal_string(other: LiteralString, color: Literal[Color.RED]):
+    value = "1"
+    if value != other:
+        reveal_type(value)  # revealed: Literal["1"]
+    else:
+        reveal_type(value)  # revealed: Literal["1"]
+
+    if color != other:
+        reveal_type(color)  # revealed: Color
+    else:
+        reveal_type(color)  # revealed: Color
+```
+
 ## Module literals
 
 Modules compare equal only to the same module object:

@@ -743,7 +743,6 @@ fn evaluate_structural_comparison<'db>(
                 None => narrow_literal_comparison(
                     db,
                     env,
-                    left,
                     right,
                     left_literal.kind(),
                     right_literal.kind(),
@@ -1439,7 +1438,6 @@ fn finite_alternatives<'db>(
 fn narrow_literal_comparison<'db>(
     db: &'db dyn Db,
     env: &ProgramEnvironment<'db>,
-    left: Type<'db>,
     right: Type<'db>,
     left_literal: LiteralValueTypeKind<'db>,
     right_literal: LiteralValueTypeKind<'db>,
@@ -1449,13 +1447,7 @@ fn narrow_literal_comparison<'db>(
         (LiteralValueTypeKind::LiteralString, LiteralValueTypeKind::String(_)) => {
             ComparisonResult::CanNarrow(right.negate_if(db, env, !equality_is_positive))
         }
-        (LiteralValueTypeKind::String(_), LiteralValueTypeKind::LiteralString) => {
-            ComparisonResult::CanNarrow(left.negate_if(db, env, !equality_is_positive))
-        }
         (LiteralValueTypeKind::LiteralString, LiteralValueTypeKind::Enum(enum_literal)) => {
-            narrow_literal_string_against_enum(db, env, enum_literal, equality_is_positive)
-        }
-        (LiteralValueTypeKind::Enum(enum_literal), LiteralValueTypeKind::LiteralString) => {
             narrow_literal_string_against_enum(db, env, enum_literal, equality_is_positive)
         }
         _ => ComparisonResult::Ambiguous,
